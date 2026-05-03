@@ -79,8 +79,111 @@ def main():
         return
 
     # Clean and standardize calls
-    merged["Call_truth"] = clean_calls(merged["Call_truth"], args.na)
-    merged["Call_test"] = clean_calls(merged["Call_test"], args.na)
+#!/usr/bin/env python3
+"""
+concordance.py
+Computes call rate and concordance between a truth and test genotype file.
+
+Expected columns: Sample, Locus, Call
+Call format: AA, AB, BB, or NA (missing)
+"""
+
+import pandas as pd
+import argparse
+import sys
+
+def standardize_columns(df):
+    """Map columns to expected names case-insensitively."""
+    expected = {"Sample", "Locus", "Call"}
+    mapping = {}
+    for col in df.columns:
+        c = str(col).strip().lower()
+        if c == "sample": mapping[col] = "Sample"
+        elif c == "locus": mapping[col] = "Locus"
+        elif c == "call": mapping[col] = "Call"
+    
+    if len(mapping) < 3:
+        missing = expected - {v for v in mapping.values()}
+        raise ValueError(f"Missing required columns in file: {missing}")
+        
+    return df.rename(columns=mapping)[["Sample", "Locus", "Call"]]
+
+def clean_calls(series, na_strings):
+    """Standardize calls to uppercase, treat specified strings as NA."""
+    na_set = {str(s).strip().upper() for s in na_strings}
+    
+    def _clean(val):
+        if pd.isna(val):
+            return "NA"
+        v = str(val).strip().upper()
+        if v in na_set or v == "":
+            return "NA"
+        return v
+        
+    return series.apply(_clean)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compute call rate and concordance between truth and test genotype files."
+    )
+    parser.add_argument("truth_file", help="Path to truth genotype file")
+    parser.add_argument("test_file", help="Path to test genotype file")
+    parser.add_argument("-d", "--delimiter", default="\t", 
+                        help="Column delimiter (default: tab)")
+    parser.add_argument("--na", nargs="+", default=["NA", "na", ".", "-", "N", ""], 
+                        help="Strings to treat as missing calls")
+    args = parser.parse_args()
+
+    # Load files
+    try:
+        truth = pd.read_csv(args.truth_file, sep=args.delimiter, dtype=str)
+        test = pd.read_csv(args.test_file, sep=args.delimiter, dtype=str)
+    except Exception as e:
+        print(f"Error reading files: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Standardize columns
+    truth = standardize_columns(truth)
+    test = standardize_columns(test)
+
+    # Remove duplicate Sample-Locus pairs (keep first occurrence)
+    truth = truth.drop_duplicates(subset=["Sample", "Locus"])
+    test = test.drop_duplicates(subset=["Sample", "Locus"])
+
+    # Merge on Sample + Locus (inner join to compare only overlapping loci)
+    merged = pd.merge(truth, test, on=["Sample", "Locus"], suffixes=("_truth", "_test"))
+
+    if merged.empty:
+        print("Warning: No overlapping Sample-Locus pairs found between files.", file=sys.stderr)
+        print("Call Rate:     0.0000 (0/0)")
+        print("Concordance:   0.0000 (0/0)")
+        return
+
+
+    # Clean and standardize calls
+    merged["Call_truth"] = clean_calls(merged["Call"], args.na)  # Assuming 'Call' is the column name in both DataFrames
+    merged["Call_test"] = clean_calls(merged["Call"], args.na)   # Assuming 'Call' is the column name in both DataFrames
+
+
+    # --- METRICS ---
+    # Call Rate: % of non-NA calls in the test file (overlapping loci)
+    total_overlapping = len(merged)
+    called_test = (merged["Call_test"] != "NA").sum()
+    call_rate = called_test / total_overlapping if total_overlapping > 0 else 0.0
+
+    # Concordance: % matching calls where BOTH truth and test are non-NA
+    both_called_mask = (merged["Call_truth"] != "NA") & (merged["Call_test"] != "NA")
+    both_called = merged[both_called_mask]
+    total_both_called = len(both_called)
+    concordant = (both_called["Call_truth"] == both_called["Call_test"]).sum()
+    concordance = concordant / total_both_called if total_both_called > 0 else 0.0
+
+    # Output
+    print(f"Call Rate:     {call_rate:.4f} ({called_test}/{total_overlapping})")
+    print(f"Concordance:   {concordance:.4f} ({concordant}/{total_both_called})")
+
+if __name__ == "__main__":
+    main()
 
     # --- METRICS ---
     # Call Rate: % of non-NA calls in the test file (overlapping loci)
